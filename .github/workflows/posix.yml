@@ -59,13 +59,28 @@ jobs:
       OS-NAME: ${{ matrix.os }}
 
     steps:
-
-    - name: Install libatomic
+    - name: Check user
       run: |
-        sudo podman info
-        sudo apt-get install -y libatomic1
-        sudo rm -rf /home/runner/_work/openblas-libs/openblas-libs/dist
-        mkdir -p /home/runner/_work/openblas-libs/openblas-libs
+        whoami
+        id 
+    - name: Install prerequisites
+      run: |
+        #!/bin/bash
+        set -exu
+
+        sudo apt update && sudo apt install make podman docker.io libatomic1 build-essential -y
+        
+        # # Start Docker daemon if not running
+        # sudo usermod -aG docker $(whoami)
+        
+        # sudo dockerd --host=unix:///var/run/docker.sock --storage-driver=vfs --detach &
+
+        
+        docker info
+        docker --version
+
+        sudo rm -rf "$HOME/_work/openblas-libs/openblas-libs/dist"
+        mkdir -p "$HOME/_work/openblas-libs/openblas-libs"
 
     - uses: actions/checkout@v4.1.1
       with:
@@ -94,16 +109,18 @@ jobs:
 
     # - name: Set up QEMU
     #  uses: docker/setup-qemu-action@v3
-
+    - name: Check Environment
+      run: |
+        nproc --all
+        uname -a
+        lscpu
+        free -h
+        df -h
     - name: Build and Test wheels
-#      uses: pypa/cibuildwheel@v3.1.4
-#      with:
-#        output-dir: dist
       env:
         CIBW_ARCHS: ${{matrix.PLAT}}
         CIBW_BUILD_VERBOSITY: 1
         CIBW_BUILD:  "cp39-${{ matrix.MB_ML_LIBC }}_${{matrix.PLAT}}"
-
         CIBW_MANYLINUX_I686_IMAGE: ${{ matrix.MB_ML_LIBC }}${{matrix.MB_ML_VER}}
         CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.MB_ML_LIBC }}${{matrix.MB_ML_VER}}
         CIBW_MUSLLINUX_X86_64_IMAGE: ${{ matrix.MB_ML_LIBC }}${{matrix.MB_ML_VER}}
@@ -111,31 +128,33 @@ jobs:
         CIBW_MUSLLINUX_AARCH64_IMAGE: ${{ matrix.MB_ML_LIBC }}${{matrix.MB_ML_VER}}
         CIBW_MANYLINUX_RISCV64_IMAGE: ${{ matrix.MB_ML_LIBC }}${{matrix.MB_ML_VER}}
         CIBW_CONTAINER_ENGINE: podman
-
       run: |
+        #!/bin/bash
+        set -exu
         cd OpenBLAS
+        sudo chown -R $(id -u):$(id -g) . || true
+        
         make clean
-        echo "cd /root" > run.sh
-        echo 'export CFLAGS="-fvisibility=protected -Wno-uninitialized"' >> run.sh
-        echo "make BUFFERSIZE=20 DYNAMIC_ARCH=1 QUIET_MAKE=1 USE_OPENMP=0 NUM_THREADS=64 BINARY= INTERFACE64=1 SYMBOLSUFFIX=64_ LIBNAMESUFFIX=64_ OBJCONV=/project/objconv/objconv SYMBOLPREFIX=scipy_ LIBNAMEPREFIX=scipy_ FIXED_LIBNAME=1 TARGET=GENERIC" >> run.sh
-        chmod +x run.sh
-        sudo podman run -i -v `pwd`:/root quay.io/pypa/manylinux_2_39_riscv64:latest /root/run.sh
-#        sudo apt-get install -y python3-pip python3-venv
-#        python3 -m venv cibw
-#        . cibw/bin/activate
-#        pip install cibuildwheel==3.1.4
-#        sudo -E bash -c '. cibw/bin/activate; python -m cibuildwheel --output-dir dist'
-
-
+        
+        # Create tarball and pipe directly into docker container
+        tar czf - . | docker run \
+          --rm \
+          --cpus="0" \
+          --cpuset-cpus="0-$(($(nproc --all) - 1))" \
+          -i \
+          quay.io/pypa/manylinux_2_39_riscv64:latest \
+          bash -c 'mkdir -p /root/openblas && cd /root/openblas && tar xzf - && export CFLAGS="-fvisibility=protected -Wno-uninitialized" && make -j$(nproc) BUFFERSIZE=20 DYNAMIC_ARCH=1 QUIET_MAKE=1 USE_OPENMP=0 NUM_THREADS=64 BINARY= INTERFACE64=1 SYMBOLSUFFIX=64_ LIBNAMESUFFIX=64_ OBJCONV=/project/objconv/objconv SYMBOLPREFIX=scipy_ LIBNAMEPREFIX=scipy_ FIXED_LIBNAME=1 TARGET=GENERIC'
+      
+      
     - name: Upload wheels to artifacts
       uses: actions/upload-artifact@v4.3.0
       with:
-        name: wheels-${{ matrix.os }}-${{ matrix.PLAT }}-${{ matrix.INTERFACE64 }}-${{ matrix.MB_ML_LIBC }}-${{ matrix.MB_ML_VER }}
+        name: wheels-${{ matrix.os }}-${{ matrix.PLAT }}-${{ matrix.INTERFACE64 }}-${{ matrix.MB_ML_LIBC }}-${{ matrix.   MB_ML_VER }}
         path: dist/scipy_openblas*.whl
-
-
+          
+          
     - name: Upload openblas to artifacts
       uses: actions/upload-artifact@v4.3.0
       with:
-        name: openblas-${{ matrix.os }}-${{ matrix.PLAT }}-${{ matrix.INTERFACE64 }}-${{ matrix.MB_ML_LIBC }}-${{ matrix.MB_ML_VER }}
+        name: openblas-${{ matrix.os }}-${{ matrix.PLAT }}-${{ matrix.INTERFACE64 }}-${{ matrix.MB_ML_LIBC }}-${{ matrix.   MB_ML_VER }}
         path: dist/openblas*.tar.gz
